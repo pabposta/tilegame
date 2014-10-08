@@ -1,0 +1,903 @@
+package processing.test.tilegame;
+
+import processing.core.*; 
+import processing.data.*; 
+import processing.event.*; 
+import processing.opengl.*; 
+
+import java.util.Arrays; 
+
+import java.util.HashMap; 
+import java.util.ArrayList; 
+import java.io.File; 
+import java.io.BufferedReader; 
+import java.io.PrintWriter; 
+import java.io.InputStream; 
+import java.io.OutputStream; 
+import java.io.IOException; 
+
+public class tilegame extends PApplet {
+
+// look for comments JAVA-ANDROID to see which parts to switch 
+
+// constants
+int screenWidth = 300;
+int screenHeight = 600;
+final int EASY = 0;
+final int MEDIUM = 1;
+final int HARD = 2;
+final int SELECTOR_COLOR = color(246, 181, 6);
+final int MENU_COLOR_FG1 = color(246, 181, 6);
+final int MENU_COLOR_FG2 = color(34, 161, 212);
+final int MENU_COLOR_BG1 = color(255, 255, 255);
+final int SELECT_STROKE_WEIGHT = 4;
+final int MIN_WAIT = 2000; // minimum amount of time that needs to pass before we can go to the next level. this avoid accidentally clicking on the screen and missing the congratulations message
+
+// objects
+Menu menu;
+TileManager tileManager;
+GameManager gameManager;
+Selector selector;
+PImage tileOverlay;
+Timer delayTimer;
+Button playButton = null;
+Button resumeButton = null;
+
+// other variables
+int xTiles;
+int yTiles;
+int tileWidthOnScreen;
+int tileHeightOnScreen;
+int fontSize;
+int fontSizeSmall;
+int startingLevel;
+
+public void setup() {
+  // manage screen
+  // JAVA-ANDROID
+  //size(screenWidth, screenHeight);
+  orientation(PORTRAIT);
+  
+  // define font size
+  fontSize = round(height * 0.05f);
+  fontSizeSmall = round(height * 0.04f);
+  
+  // menu
+  menu = buildMenu();
+  
+  // create game manager
+  gameManager = new GameManager();
+}
+
+// JAVA-ANDROID
+/*void keyPressed() {
+  if (key == ESC) {
+    if (!gameManager.inMenu()) {
+      backToMenu();
+      // avoid quitting application by not passing back key to base class
+      key = 0;
+    }
+  }
+}*/
+
+// JAVA-ANDROID
+public boolean surfaceKeyDown(int code, android.view.KeyEvent event) {
+  if (event.getKeyCode() == android.view.KeyEvent.KEYCODE_BACK) {
+    if (!gameManager.inMenu()) {
+      backToMenu();
+      // avoid quitting application
+      return true;
+    }
+    else {
+      // move the task to stack, so we can recover it
+      moveTaskToBack(true);
+      return true;
+    } 
+  }
+  return super.surfaceKeyDown(code, event);
+}
+
+// JAVA-ANDROID
+public boolean surfaceKeyUp(int code, android.view.KeyEvent event) {
+  return super.surfaceKeyDown(code, event);
+}
+
+public void backToMenu() {
+  // open the menu
+  gameManager.goToMenu();
+  // add a resume button, if it does not exist yet and move the play button down a notch
+  if (resumeButton == null) {
+    resumeButton = new Button(PApplet.parseInt(width * 0.5f), PApplet.parseInt(height * 0.111f), PApplet.parseInt(9 * fontSize * 0.6f), PApplet.parseInt(fontSize * 1.5f), MENU_COLOR_FG1, MENU_COLOR_BG1, "Continuar", fontSize, false, 3, new Callback() {
+      public void run() {
+        // resume the game
+        gameManager.resume();
+      }
+    });
+    menu.registerButton(resumeButton);
+    playButton.moveBy(0, PApplet.parseInt(0.055f * height));
+  }
+  // unhighlight the play and resume buttons
+  playButton.unHighlight();
+  resumeButton.unHighlight();
+}
+
+public void mousePressed() {
+  // do different stuff, depending on what state we are in
+  // in the menu
+  if (gameManager.inMenu()) {
+    menu.click(mouseX, mouseY);
+  }
+  // we won
+  else if (gameManager.won()) {
+    if (delayTimer.getElapsedTime() > MIN_WAIT) {
+      delayTimer.stop();
+      gameManager.nextLevel();
+    }
+  }
+  // we are playing
+  else {
+    // convert screen coordinates to tile coordinates
+    int x = mouseX / tileWidthOnScreen;
+    int y = mouseY / tileHeightOnScreen;
+  
+    // ignore clicks on correctly places tiles
+    if (!tileManager.getTileAt(x, y).isMisplaced(x, y)) {
+      return;
+    }
+    // two cases: a tile is already selected and we swap, or it is not and we just select it
+    if (selector.isOn()) {
+      // swap
+      tileManager.tileSwap(x, y, selector.getX(), selector.getY());
+    }
+    // toggle in any case. this will unhighlight a selector after a swap and highlight a selector in the case it was off
+    selector.toggle(x, y);
+    // if we won, start delay timer
+    if (gameManager.won()) {
+      delayTimer.start();
+    }
+  }
+}
+
+public void draw() {
+  // clear buffer
+  background(0);
+  
+  // depending on mode draw either menu or game screen
+  // menu
+  if (gameManager.inMenu()) {
+    menu.draw();
+  }
+  // game screen
+  else {
+    // draw the tiles
+    for (int x = 0; x < tileManager.getXTiles(); x++) { 
+      for (int y = 0; y < tileManager.getYTiles(); y++) {
+        int screenX = tileWidthOnScreen * x;
+        int screenY = tileHeightOnScreen * y;
+        tileManager.getTileAt(x, y).draw(screenX, screenY, tileWidthOnScreen, tileHeightOnScreen);
+        if (tileManager.getTileAt(x, y).isMisplaced(x, y)) {
+          image(tileOverlay, screenX, screenY, tileWidthOnScreen, tileHeightOnScreen);
+        }
+      }
+    }
+    // draw the highlight box around a tile if it has been selected
+    if (selector.isOn()) {
+      selector.draw(tileWidthOnScreen * selector.getX(), tileHeightOnScreen * selector.getY(), tileWidthOnScreen, tileHeightOnScreen);
+    }
+    // if we won, display a congratulations message
+    if (gameManager.won()) {
+      // get level time
+      int ms = gameManager.getElapsedTime();
+      int s = (ms / 1000) % 60;
+      int m = ms / 60000;
+      String elapsedTime = nf(m, 2) + ":" + nf(s, 2);
+      // display level ended text.
+      // display text depends on image orientation, as it is follows the orientation.
+      // variables we need
+      float rotation;
+      int x, y, yStep, yStepSmall;
+      // horizontal image 
+      if (tileManager.levelIsWide()) {
+        rotation = PI / 2.0f;
+        x = round(height * 0.5f);
+        y = -round(width * 0.85f);
+        yStep = round(width * 0.2f);
+        yStepSmall = round(width * 0.1f);
+      }
+      // vertical image
+      else {
+        rotation = 0.0f;
+        x = round(width * 0.5f);
+        y = round(height * 0.25f);
+        yStep = round(height * 0.15f);
+        yStepSmall = round(height * 0.05f);
+      }
+      // draw the text
+      pushMatrix();
+      rotate(rotation);
+      strokeText("Parab\u00e9ns bonitinha", x, y, fontSize, color(246, 181, 6), color(0, 0, 0), CENTER, CENTER, 2);
+      y += yStep;
+      strokeText("Ganhou!", x, y, fontSize, color(34, 161, 212), color(0, 0, 0), CENTER, CENTER, 2);
+      y += yStep;
+      strokeText("Seu tempo", x, y, fontSizeSmall, color(245, 12, 63), color(0, 0, 0), CENTER, CENTER, 2);
+      y += yStepSmall;
+      strokeText(elapsedTime, x, y, fontSizeSmall, color(255, 255, 255), color(0, 0, 0), CENTER, CENTER, 2);
+      y += yStep;
+      strokeText("Pr\u00f3ximo n\u00edvel", x, y, fontSize, color(30, 179, 21), color(0, 0, 0), CENTER, CENTER, 2);
+      popMatrix();
+    }
+  }
+}
+
+public void play() {
+  // tile manager
+  tileManager = new TileManager(xTiles, yTiles, dataPath(""), "level");
+  gameManager.setTileManager(tileManager);
+     
+  // gui objects
+  tileWidthOnScreen = width / xTiles;
+  tileHeightOnScreen = height / yTiles;
+  selector = new Selector(SELECTOR_COLOR, SELECT_STROKE_WEIGHT);
+  tileOverlay = loadImage("button.png");
+  delayTimer = new Timer();
+  
+  // start game
+  gameManager.setLevel(startingLevel);  
+  gameManager.play();
+}
+
+public void setDifficulty(int level) {
+  if (level == EASY) {
+    xTiles = 3;
+    yTiles = 6;
+  }
+  else if (level == MEDIUM) {
+    xTiles = 4;
+    yTiles = 8;
+  }
+  else if (level == HARD) {
+    xTiles = 5;
+    yTiles = 10;
+  }
+}
+
+public void setLevel(int level) {
+  startingLevel = level;
+}
+
+public Menu buildMenu() {
+  menu = new Menu();
+  // play button
+  playButton = new Button(PApplet.parseInt(width * 0.5f), PApplet.parseInt(height * 0.167f), PApplet.parseInt(5 * fontSize * 0.75f), PApplet.parseInt(fontSize * 1.5f), MENU_COLOR_FG1, MENU_COLOR_BG1, "Iniciar", fontSize, false, 0, new Callback() {
+    public void run() {
+      play();
+    }
+  });
+  menu.registerButton(playButton);
+  // level buttons
+  menu.registerLabel(new Label("N\u00edvel", PApplet.parseInt(width * 0.5f), PApplet.parseInt(height * 0.333f), fontSize, MENU_COLOR_FG1, MENU_COLOR_BG1));
+  menu.registerButton(new Button(PApplet.parseInt(width * 0.167f), PApplet.parseInt(height * 0.458f), fontSizeSmall, PApplet.parseInt(fontSizeSmall * 1.5f), MENU_COLOR_FG2, MENU_COLOR_BG1, "1", fontSizeSmall, true, 1, new Callback(){
+    public void run() {
+      setLevel(1);
+    }
+  }));
+  menu.registerButton(new Button(PApplet.parseInt(width * 0.333f), PApplet.parseInt(height * 0.458f), fontSizeSmall, PApplet.parseInt(fontSizeSmall * 1.5f), MENU_COLOR_FG2, MENU_COLOR_BG1, "2", fontSizeSmall, false, 1, new Callback(){
+    public void run() {
+      setLevel(2);
+    }
+  }));
+  menu.registerButton(new Button(PApplet.parseInt(width * 0.5f), PApplet.parseInt(height * 0.458f), fontSizeSmall, PApplet.parseInt(fontSizeSmall * 1.5f), MENU_COLOR_FG2, MENU_COLOR_BG1, "3", fontSizeSmall, false, 1, new Callback(){
+    public void run() {
+      setLevel(3);
+    }
+  }));
+  menu.registerButton(new Button(PApplet.parseInt(width * 0.667f), PApplet.parseInt(height * 0.458f), fontSizeSmall, PApplet.parseInt(fontSizeSmall * 1.5f), MENU_COLOR_FG2, MENU_COLOR_BG1, "4", fontSizeSmall, false, 1, new Callback(){
+    public void run() {
+      setLevel(4);
+    }
+  }));
+  menu.registerButton(new Button(PApplet.parseInt(width * 0.833f), PApplet.parseInt(height * 0.458f), fontSizeSmall, PApplet.parseInt(fontSizeSmall * 1.5f), MENU_COLOR_FG2, MENU_COLOR_BG1, "5", fontSizeSmall, false, 1, new Callback(){
+    public void run() {
+      setLevel(5);
+    }
+  }));
+  menu.registerButton(new Button(PApplet.parseInt(width * 0.167f), PApplet.parseInt(height * 0.542f), fontSizeSmall, PApplet.parseInt(fontSizeSmall * 1.5f), MENU_COLOR_FG2, MENU_COLOR_BG1, "6", fontSizeSmall, false, 1, new Callback(){
+    public void run() {
+      setLevel(6);
+    }
+  }));
+  menu.registerButton(new Button(PApplet.parseInt(width * 0.333f), PApplet.parseInt(height * 0.542f), fontSizeSmall, PApplet.parseInt(fontSizeSmall * 1.5f), MENU_COLOR_FG2, MENU_COLOR_BG1, "7", fontSizeSmall, false, 1, new Callback(){
+    public void run() {
+      setLevel(7);
+    }
+  }));
+  menu.registerButton(new Button(PApplet.parseInt(width * 0.5f), PApplet.parseInt(height * 0.542f), fontSizeSmall, PApplet.parseInt(fontSizeSmall * 1.5f), MENU_COLOR_FG2, MENU_COLOR_BG1, "8", fontSizeSmall, false, 1, new Callback(){
+    public void run() {
+      setLevel(8);
+    }
+  }));
+  menu.registerButton(new Button(PApplet.parseInt(width * 0.667f), PApplet.parseInt(height * 0.542f), fontSizeSmall, PApplet.parseInt(fontSizeSmall * 1.5f), MENU_COLOR_FG2, MENU_COLOR_BG1, "9", fontSizeSmall, false, 1, new Callback(){
+    public void run() {
+      setLevel(9);
+    }
+  }));
+  menu.registerButton(new Button(PApplet.parseInt(width * 0.833f), PApplet.parseInt(height * 0.542f), PApplet.parseInt(1.5f * fontSizeSmall), PApplet.parseInt(fontSizeSmall * 1.5f), MENU_COLOR_FG2, MENU_COLOR_BG1, "10", fontSizeSmall, false, 1, new Callback(){
+    public void run() {
+      setLevel(10);
+    }
+  }));
+  // set level to match highlighted button
+  setLevel(1);
+  // difficulty buttons
+  menu.registerLabel(new Label("Dificuldade", PApplet.parseInt(width * 0.5f), PApplet.parseInt(height * 0.667f), fontSize, MENU_COLOR_FG1, MENU_COLOR_BG1));
+  menu.registerButton(new Button(PApplet.parseInt(width * 0.2f), PApplet.parseInt(height * 0.792f), PApplet.parseInt(5 * fontSizeSmall * 0.6f), PApplet.parseInt(fontSizeSmall * 1.5f), MENU_COLOR_FG2, MENU_COLOR_BG1, "F\u00e1cil", fontSizeSmall, false, 2, new Callback() {
+    public void run() {
+      setDifficulty(EASY);
+    }
+  }));
+  menu.registerButton(new Button(PApplet.parseInt(width * 0.5f), PApplet.parseInt(height * 0.792f), PApplet.parseInt(5 * fontSizeSmall * 0.6f), PApplet.parseInt(fontSizeSmall * 1.5f), MENU_COLOR_FG2, MENU_COLOR_BG1, "M\u00e9dia", fontSizeSmall, true, 2, new Callback() {
+    public void run() {
+      setDifficulty(MEDIUM);
+    }
+  }));
+  menu.registerButton(new Button(PApplet.parseInt(width * 0.8f), PApplet.parseInt(height * 0.792f), PApplet.parseInt(5 * fontSizeSmall * 0.6f), PApplet.parseInt(fontSizeSmall * 1.5f), MENU_COLOR_FG2, MENU_COLOR_BG1, "Dif\u00edcil", fontSizeSmall, false, 2, new Callback() {
+    public void run() {
+      setDifficulty(HARD);
+    }
+  }));
+  // set the difficulty to match highlighted button
+  setDifficulty(MEDIUM);
+  // return our shiny new menu
+  return menu;
+}
+
+class Button {
+  private int _xLeft;
+  private int _xCenter;
+  private int _xRight;
+  private int _yTop;
+  private int _yCenter;
+  private int _yBottom;
+  private int _primaryColor;
+  private int _secondaryColor;
+  private String _label;
+  private int _fontSize;
+  private int _buttonGroupId;
+  private Callback _callback;
+  private boolean _highlighted;
+  
+  public Button(int x, int y, int w, int h, int primaryColor, int secondaryColor, String label, int fontSize, boolean highlighted, int buttonGroupId, Callback callback) {
+    _xLeft = PApplet.parseInt(x - w * 0.5f);
+    _xCenter = x;
+    _xRight = PApplet.parseInt(x + w * 0.5f);
+    _yTop = PApplet.parseInt(y - h * 0.5f);
+    _yCenter = y;
+    _yBottom = PApplet.parseInt(y + h * 0.5f);
+    _primaryColor = primaryColor;
+    _secondaryColor = secondaryColor;
+    _label = label;
+    _fontSize = fontSize;
+    _buttonGroupId = buttonGroupId;
+    _callback = callback;
+    _highlighted = highlighted;
+  }
+  
+  public boolean isAt(int x, int y) {
+    return x >= _xLeft && x <= _xRight && y >= _yTop && y <= _yBottom;
+  };
+  
+  public void draw() {
+    if (_highlighted) {
+      // draw highlighted buttons with inverted colors and slighltly larger
+      int extraSize = PApplet.parseInt(_fontSize * 0.4f);
+      strokeText(_label, _xCenter, _yCenter - PApplet.parseInt(extraSize * 0.175f), _fontSize + extraSize, _secondaryColor, _primaryColor, CENTER, CENTER, 2);
+    }
+    else {
+      strokeText(_label, _xCenter, _yCenter, _fontSize, _primaryColor, _secondaryColor, CENTER, CENTER, 2);
+    }
+  }
+  
+  public void click() {
+    _highlighted = true;
+    if (_callback != null) {
+      _callback.run();
+    }
+  }
+  
+  public void unHighlight() {
+    _highlighted = false;
+  }
+  
+  public boolean isHighlighted() {
+    return _highlighted;
+  }
+  
+  public int getButtonGroupId() {
+    return _buttonGroupId;
+  }
+  
+  public boolean hasLabel(String label) {
+    return _label == label;
+  }
+  
+  public void moveBy(int x, int y) {
+    _xLeft += x;
+    _xCenter += x;
+    _xRight += x;
+    _yTop += y;
+    _yCenter += y;
+    _yBottom += y;
+  }
+}
+public interface Callback {
+  public void run();
+}
+class GameManager {
+  private final int MENU = 0;
+  private final int PLAYING = 1;
+  private final int WON = 2;
+  
+  private int _level;
+  private TileManager _tileManager;
+  private int _state;
+  private Timer _timer;
+    
+  public GameManager() {
+    // create the timer
+    _timer = new Timer();
+    // init level to 1
+    _level = 1;
+    // start in menu mode
+    _state = MENU;
+  }
+  
+  public void setTileManager(TileManager tileManager) {
+    _tileManager = tileManager;
+  } 
+  
+  public boolean inMenu() {
+    return _state == MENU;
+  } 
+  
+  public void goToMenu() {
+    _state = MENU;
+  }
+  
+  public boolean won() {
+    // quickly check if the state already is won
+    if (_state == WON) {
+      return true;
+    }
+    // if we are not playing, we cannot possibly win
+    if (_state != PLAYING) {
+      return false;
+    }
+    // check if all tiles are in the correct place
+    if (_tileManager.noTilesMisplaced()) {
+      // stop timer
+      _timer.stop();
+      // set state to won
+      _state = WON;
+      // return true
+      return true;
+    }
+    // otherwise return false
+    return false;
+  }
+  
+  public void play() {
+    // tell tile manager to create the next tile
+    _tileManager.newLevel(_level);
+    // set state to playing
+    _state = PLAYING;
+    // start timer
+    _timer.start();
+  }
+  
+  public void resume() {
+    // set state to playing
+    _state = PLAYING;
+    // start timer
+    _timer.start();
+  }
+  
+  public void setLevel(int level) {
+    _level = level;
+    if (_level > _tileManager.getNumberOfLevels()) {
+      _level = _tileManager.getNumberOfLevels();
+    }
+  }
+  
+  public void nextLevel() {
+    // advance one level in a circular fashion
+    _level++;
+    if (_level > _tileManager.getNumberOfLevels()) {
+      _level = 1;
+    }
+    // start playing
+    play();
+  }
+  
+  public int getElapsedTime() {
+    return _timer.getElapsedTime();
+  }
+}
+class Label {
+  
+  private String _text;
+  private int _x;
+  private int _y;
+  private int _fontSize;
+  private int _primaryColor;
+  private int _secondaryColor;
+  
+  public Label(String text, int x, int y, int fontSize, int primaryColor, int secondaryColor) {
+    _text = text;
+    _x = x;
+    _y = y;
+    _fontSize = fontSize;
+    _primaryColor = primaryColor;
+    _secondaryColor = secondaryColor;
+  }
+  
+  public void draw() {
+    strokeText(_text, _x, _y, _fontSize, _primaryColor, _secondaryColor, CENTER, CENTER, 2);
+  }
+}
+class Menu {
+  private ArrayList<Button> _buttons;
+  private HashMap<Integer, Button> _previousHighlighted;
+  private ArrayList<Label> _labels;
+  
+  public Menu() {
+    _buttons = new ArrayList<Button>();
+    _previousHighlighted = new HashMap<Integer, Button>();
+    _labels = new ArrayList<Label>();
+  }  
+  
+  public void click(int x, int y) {
+    for (int i = 0; i < _buttons.size(); i++) {
+      Button button = _buttons.get(i);
+      if (button.isAt(x, y)) {
+        // unhighlight the previously highlighted button of the group
+        Integer buttonGroupId = new Integer(button.getButtonGroupId());
+        if (_previousHighlighted.containsKey(buttonGroupId)) {
+          _previousHighlighted.get(buttonGroupId).unHighlight();
+        }
+        // set the new button as previously highlighted
+        _previousHighlighted.put(buttonGroupId, button);
+        // pass the click to the button
+        button.click();
+        // buttons do not overlap, so we do not need to check the rest
+        break;
+      }
+    }
+  }
+  
+  public void draw() {
+    for (int i = 0; i < _buttons.size(); i++) {
+      _buttons.get(i).draw();
+    }
+    for (int i = 0; i < _labels.size(); i++) {
+      _labels.get(i).draw();
+    }
+  }
+ 
+  public void registerButton(Button button) {
+    _buttons.add(button);
+    // if the button is highlighted set it as previous highlighted
+    if (button.isHighlighted()) {
+      Integer buttonGroupId = new Integer(button.getButtonGroupId());
+      _previousHighlighted.put(buttonGroupId, button);
+    }
+  }
+  
+  public void unRegisterButton(String label) {
+    Button button = null;
+    for (int i = 0; i < _buttons.size(); i++) {
+      button = _buttons.get(i); 
+      if (button.hasLabel(label)) {
+        _buttons.remove(i);
+        break;
+      }
+    } 
+    // if it is highlighted, remove the previous highlight also 
+    if (button != null && button.isHighlighted()) {
+      Integer buttonGroupId = new Integer(button.getButtonGroupId());
+      _previousHighlighted.remove(buttonGroupId);
+    }
+  }
+  
+  public void registerLabel(Label label) {
+    _labels.add(label);
+  }
+}
+class Selector {
+  private int _x;
+  private int _y;
+  private boolean _on;
+  private int _color;
+  private int _strokeWeight;
+  
+  public Selector(int c, int strokeWeight) {
+    _on = false;
+    _color = c;
+    _strokeWeight = strokeWeight;
+  }
+  
+  public void draw(int x, int y, int w, int h) {
+    if (_on) {
+      stroke(_color);
+      strokeWeight(_strokeWeight);
+      noFill();
+      rect(x, y, w, h);
+    }
+  }
+  
+  public void toggle() {
+    _on = !_on;
+  }
+  
+  public void toggle(int x, int y) {
+    _on = !_on;
+    _x = x;
+    _y = y;
+  }
+  
+  public boolean isOn() {
+    return _on;
+  }
+  
+  public void setX(int x) {
+    _x = x;
+  }
+  
+  public int getX() {
+    return _x;
+  }
+  
+  public void setY(int y) {
+    _y = y;
+  }
+  
+  public int getY() {
+    return _y;
+  }
+  
+  public void setColor(int c) {
+    _color = c;
+  }
+  
+  public int getColor() {
+    return _color;
+  }
+  
+  public void setStrokeWidth(int strokeWeight) {
+    _strokeWeight = strokeWeight;
+  }
+  
+  public int getStrokeWidth() {
+    return _strokeWeight;
+  }
+}
+class Tile {
+  // position where tile should go
+  private int _destinationX;
+  private int _destinationY;
+  // our tile image
+  PImage _img;
+  
+  public Tile(PImage img, int x, int y, int w, int h) {
+    // cut out the part of the image that we are interested in
+    _img = img.get(x * w, y * h, w, h);
+    // copy the parameters
+    _destinationX = x;
+    _destinationY = y;
+  }
+  
+  public void draw(int x, int y, int w, int h) {
+    image(_img, x, y, w, h);
+  }
+  
+  public boolean isMisplaced(int x, int y) {
+    return x != _destinationX || y != _destinationY;
+  }
+  
+  public void setDestinationX(int x) {
+    _destinationX = x;
+  }  
+  
+  public int getDestinationX() {
+    return _destinationX;
+  }  
+  
+  public void setDestinationY(int y) {
+    _destinationY = y;
+  }
+
+  public int getDestinationY() {
+    return _destinationY;
+  }
+  
+  public void setImage(PImage img) {
+    _img = img;
+  }
+  
+  public PImage getImage() {
+    return _img;
+  }
+}
+
+
+class TileManager {
+  private int _xTiles;
+  private int _yTiles;
+  private String[] _levelFiles;
+  private Tile[][] _tiles;
+  private boolean _imageIsWide;
+  
+  public TileManager(int xTiles, int yTiles, String path, String prefix) {
+    // copy parameters
+    _xTiles = xTiles;
+    _yTiles = yTiles;
+    // create the tile matrix
+    _tiles = new Tile[xTiles][yTiles];
+    // read the list of level files
+    getLevelFiles(path, prefix);
+  }
+  
+  public void newLevel(int level) {
+    // read the new level image from disk
+    PImage img = loadImage(_levelFiles[level - 1]); // levels start counting at 1, but java arrays start counting at 0 (so we have a - 1)
+    
+    // if the image is wider than it is high, rotate it 90 degrees
+    if (img.width > img.height) {
+      // buffer for the new image
+      PImage tmp = createImage(img.height, img.width, RGB);
+      // load pixel array from image
+      img.loadPixels();
+      // copy the pixels one by one, swapping rows with columns, so that the picture is rotated to the right 90 degrees
+      for (int i = 0; i < img.width; i++) {
+        for (int j = 0; j < img.height; j++) {
+          tmp.pixels[i * img.height + img.height - j - 1] = img.pixels[j * img.width + i];
+        }
+      }
+      // update tmp image with copied pixel array
+      tmp.updatePixels();
+      // set tmp image as new img
+      img = tmp;
+      // set wide flag
+      _imageIsWide = true;
+    }
+    else {
+      // set wide flag to false
+      _imageIsWide = false;
+    }
+    
+    // divide the image into tiles
+    int tileWidthInImage = img.width / _xTiles;
+    int tileHeightInImage = img.height / _yTiles;
+    for (int x = 0; x < _xTiles; x++) { 
+      for (int y = 0; y < _yTiles; y++) {
+        _tiles[x][y] = new Tile(img, x, y, tileWidthInImage, tileHeightInImage);
+      }
+    }
+    
+    // shuffle the image tiles with (modified) Fisher-Yates algorithm. a tile cannot be in its original spot 
+    for (int x = _xTiles - 1; x >= 0; x--) {
+      for (int y = _yTiles - 1; y >= 0; y--) {
+        int i = PApplet.parseInt(random(x * _yTiles + y));
+        int xSwap = i / _yTiles;
+        int ySwap = i % _yTiles;
+        
+        // swap
+        tileSwap(x, y, xSwap, ySwap);
+      }
+    }
+  }
+  
+  public Tile getTileAt(int x, int y) {
+    return _tiles[x][y];
+  }
+  
+  public boolean noTilesMisplaced() {
+    for (int x = 0; x < _xTiles; x++) { 
+      for (int y = 0; y < _yTiles; y++) {
+        // if just one is misplaced, we can return false
+        if (_tiles[x][y].isMisplaced(x, y)) {
+          return false;
+        }
+      }
+    }
+    // if we got here, no tiles are misplaced
+    return true;
+  }
+  
+  public void tileSwap (int x1, int y1, int x2, int y2) {
+    // swap the tiles inside the array
+    Tile tmp = _tiles[x1][y1];
+    _tiles[x1][y1] = _tiles[x2][y2];
+    _tiles[x2][y2] = tmp;
+  }
+  
+  public int getNumberOfLevels() {
+    return _levelFiles.length;
+  }
+  
+  public boolean levelIsWide() {
+    return _imageIsWide;
+  }
+  
+  public int getXTiles() {
+    return _xTiles;
+  }
+  
+  public int getYTiles() {
+    return _yTiles;
+  }
+  
+  private void getLevelFiles(String path, final String prefix) {
+    _levelFiles = new String[] {
+      "level01.jpg",
+      "level02.jpg",
+      "level03.jpg",
+      "level04.jpg",
+      "level05.jpg",
+      "level06.jpg",
+      "level07.jpg",
+      "level08.jpg",
+      "level09.jpg",
+      "level10.jpg"
+    };
+  }
+}
+class Timer {
+  int _start;
+  int _stop;
+  
+  public Timer() {
+    _start = 0;
+    _stop = 0;
+  }
+  
+  public void start() {
+    _start = millis();
+    _stop = 0; // indicate that we have not stopped
+  }
+  
+  public void stop() {
+    _stop = millis();
+  }
+  
+  public int getElapsedTime() {
+    // we haven't started yet
+    if (_start == 0) {
+      return 0;
+    }
+    // we are currently running
+    if (_stop == 0) {
+      return millis() - _start;
+    }
+    // we have stopped
+    return _stop - _start;
+  }
+}
+public void strokeText(String message, int x, int y, int size, int foreground, int background, int alignX, int alignY, int strokeSize) 
+{ 
+  /*
+  Idea taken from http://forum.processing.org/one/topic/text-outline.html
+  */
+  textSize(size);
+  textAlign(alignX, alignY);
+  fill(background);
+  if (strokeSize != 0) {
+    text(message, x - strokeSize, y);
+    text(message, x, y - strokeSize);
+    text(message, x + strokeSize, y);
+    text(message, x, y + strokeSize);
+  }
+  fill(foreground);
+  text(message, x, y); 
+} 
+
+}
